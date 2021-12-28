@@ -1,21 +1,114 @@
 // =============================================================================
 //                                  Config
 // =============================================================================
-
-let web3 = new Web3(Web3.givenProvider || "ws://localhost:8545");
+let web3 = new Web3("ws://localhost:8545" || Web3.givenProvider);
 
 // Constant we use later
 var GENESIS = '0x0000000000000000000000000000000000000000000000000000000000000000';
 
 // This is the ABI for your contract (get it from Remix, in the 'Compile' tab)
 // ============================================================
-var abi = []; // FIXME: fill this in with your contract's ABI //Be sure to only have one array, not two
+var abi = [
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "creditor",
+          "type": "address"
+        },
+        {
+          "internalType": "uint32",
+          "name": "amount",
+          "type": "uint32"
+        }
+      ],
+      "name": "addIOU",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "debtor",
+          "type": "address"
+        }
+      ],
+      "name": "getAmountOwed",
+      "outputs": [
+        {
+          "internalType": "uint32",
+          "name": "ret",
+          "type": "uint32"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "user",
+          "type": "address"
+        }
+      ],
+      "name": "getLastActivity",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "ret",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "getUsers",
+      "outputs": [
+        {
+          "internalType": "address[]",
+          "name": "ret",
+          "type": "address[]"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "debtor",
+          "type": "address"
+        },
+        {
+          "internalType": "address",
+          "name": "creditor",
+          "type": "address"
+        }
+      ],
+      "name": "lookup",
+      "outputs": [
+        {
+          "internalType": "uint32",
+          "name": "ret",
+          "type": "uint32"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    }
+  ];
 
 // ============================================================
 abiDecoder.addABI(abi);
 // call abiDecoder.decodeMethod to use this - see 'getAllFunctionCalls' for more
 
-var contractAddress = ''; // FIXME: fill this in with your contract's address/hash
+var contractAddress = '0x848aE8a6dd7F0d72B46A850084b5355DE33171Ed';
 var BlockchainSplitwise = new web3.eth.Contract(abi, contractAddress);
 
 // =============================================================================
@@ -29,27 +122,37 @@ var BlockchainSplitwise = new web3.eth.Contract(abi, contractAddress);
 //   - a list of everyone who has ever sent or received an IOU
 // OR
 //   - a list of everyone currently owing or being owed money
-async function getUsers() {
-
+async function getUsers() {  
+  return BlockchainSplitwise.methods.getUsers().call({
+    from: web3.eth.defaultAccount
+  });
 }
 
 // TODO: Get the total amount owed by the user specified by 'user'
 async function getTotalOwed(user) {
-
+  const amt = await BlockchainSplitwise.methods.getAmountOwed(user).call({
+    from: web3.eth.defaultAccount
+  });
+  return Number(amt);
 }
 
 // TODO: Get the last time this user has sent or received an IOU, in seconds since Jan. 1, 1970
 // Return null if you can't find any activity for the user.
 // HINT: Try looking at the way 'getAllFunctionCalls' is written. You can modify it if you'd like.
 async function getLastActive(user) {
-
+  const time = BlockchainSplitwise.methods.getLastActivity(user).call({
+    from: web3.eth.defaultAccount
+  });
+  return Number(time);
 }
 
 // TODO: add an IOU ('I owe you') to the system
 // The person you owe money is passed as 'creditor'
 // The amount you owe them is passed as 'amount'
 async function add_IOU(creditor, amount) {
-
+  return BlockchainSplitwise.methods.addIOU(creditor, amount).send({
+    from: web3.eth.defaultAccount
+  });
 }
 
 // =============================================================================
@@ -125,7 +228,7 @@ web3.eth.getAccounts().then((response)=> {
 	});
 
 	getLastActive(web3.eth.defaultAccount).then((response)=>{
-		time = timeConverter(response)
+		time = timeConverter(response ? response : null);
 		$("#last_active").html(time)
 	});
 });
@@ -162,6 +265,7 @@ getUsers().then((response)=>{
 $("#addiou").click(function() {
 	web3.eth.defaultAccount = $("#myaccount").val(); //sets the default account
   add_IOU($("#creditor").val(), $("#amount").val()).then((response)=>{
+    console.log('adding IOU', response);
 		window.location.reload(true); // refreshes the page after add_IOU returns and the promise is unwrapped
 	})
 });
