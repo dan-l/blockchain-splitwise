@@ -33,57 +33,6 @@ var abi = [
           "internalType": "address",
           "name": "debtor",
           "type": "address"
-        }
-      ],
-      "name": "getAmountOwed",
-      "outputs": [
-        {
-          "internalType": "uint32",
-          "name": "ret",
-          "type": "uint32"
-        }
-      ],
-      "stateMutability": "view",
-      "type": "function"
-    },
-    {
-      "inputs": [
-        {
-          "internalType": "address",
-          "name": "user",
-          "type": "address"
-        }
-      ],
-      "name": "getLastActivity",
-      "outputs": [
-        {
-          "internalType": "uint256",
-          "name": "ret",
-          "type": "uint256"
-        }
-      ],
-      "stateMutability": "view",
-      "type": "function"
-    },
-    {
-      "inputs": [],
-      "name": "getUsers",
-      "outputs": [
-        {
-          "internalType": "address[]",
-          "name": "ret",
-          "type": "address[]"
-        }
-      ],
-      "stateMutability": "view",
-      "type": "function"
-    },
-    {
-      "inputs": [
-        {
-          "internalType": "address",
-          "name": "debtor",
-          "type": "address"
         },
         {
           "internalType": "address",
@@ -108,7 +57,7 @@ var abi = [
 abiDecoder.addABI(abi);
 // call abiDecoder.decodeMethod to use this - see 'getAllFunctionCalls' for more
 
-var contractAddress = '0x848aE8a6dd7F0d72B46A850084b5355DE33171Ed';
+var contractAddress = '0x627733e0358d5CE1c778B8Ae8F22651CE953Eba0';
 var BlockchainSplitwise = new web3.eth.Contract(abi, contractAddress);
 
 // =============================================================================
@@ -123,27 +72,49 @@ var BlockchainSplitwise = new web3.eth.Contract(abi, contractAddress);
 // OR
 //   - a list of everyone currently owing or being owed money
 async function getUsers() {  
-  return BlockchainSplitwise.methods.getUsers().call({
-    from: web3.eth.defaultAccount
-  });
+  // You can assume that the transaction volume is small enough that it’s feasible to search the
+  // whole blockchain on the client,
+  const calls = await getAllFunctionCalls(contractAddress, 'addIOU');
+  
+  const usersSet = calls.reduce((users, { from, args }) => {
+    const [to, _] = args;
+    users.add(from);
+    users.add(to);
+    return users;
+  }, new Set());
+
+  return Array.from(usersSet);
 }
 
 // TODO: Get the total amount owed by the user specified by 'user'
 async function getTotalOwed(user) {
-  const amt = await BlockchainSplitwise.methods.getAmountOwed(user).call({
-    from: web3.eth.defaultAccount
-  });
-  return Number(amt);
+  const creditors = await getUsers();
+  let amtOwed = 0;
+  for (const creditor of creditors) {
+    if (user !== creditor) {
+      const response = await BlockchainSplitwise.methods.lookup(user, creditor).call({
+        from: user
+      });
+      amtOwed += Number(response);
+    }
+  }
+
+  return amtOwed;
 }
 
 // TODO: Get the last time this user has sent or received an IOU, in seconds since Jan. 1, 1970
 // Return null if you can't find any activity for the user.
 // HINT: Try looking at the way 'getAllFunctionCalls' is written. You can modify it if you'd like.
 async function getLastActive(user) {
-  const time = BlockchainSplitwise.methods.getLastActivity(user).call({
-    from: web3.eth.defaultAccount
+  const calls = await getAllFunctionCalls(contractAddress, 'addIOU');
+  const userCall = calls.find(({ from, args, t}) => {
+    // either a debtor or creditor
+    if (from.toLowerCase() === user.toLowerCase() || args[0].toLowerCase() === user.toLowerCase()) {
+      return true;
+    }
   });
-  return Number(time);
+
+  return userCall ? userCall.t : null;
 }
 
 // TODO: add an IOU ('I owe you') to the system
@@ -228,7 +199,7 @@ web3.eth.getAccounts().then((response)=> {
 	});
 
 	getLastActive(web3.eth.defaultAccount).then((response)=>{
-		time = timeConverter(response ? response : null);
+		time = timeConverter(response);
 		$("#last_active").html(time)
 	});
 });
