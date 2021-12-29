@@ -20,6 +20,11 @@ var abi = [
           "internalType": "uint32",
           "name": "amount",
           "type": "uint32"
+        },
+        {
+          "internalType": "address[]",
+          "name": "path",
+          "type": "address[]"
         }
       ],
       "name": "addIOU",
@@ -50,29 +55,6 @@ var abi = [
       ],
       "stateMutability": "view",
       "type": "function"
-    },
-    {
-      "inputs": [
-        {
-          "internalType": "address",
-          "name": "debtor",
-          "type": "address"
-        },
-        {
-          "internalType": "address",
-          "name": "creditor",
-          "type": "address"
-        },
-        {
-          "internalType": "uint32",
-          "name": "amount",
-          "type": "uint32"
-        }
-      ],
-      "name": "updateIOU",
-      "outputs": [],
-      "stateMutability": "nonpayable",
-      "type": "function"
     }
   ];
 
@@ -80,7 +62,7 @@ var abi = [
 abiDecoder.addABI(abi);
 // call abiDecoder.decodeMethod to use this - see 'getAllFunctionCalls' for more
 
-var contractAddress = '0xE2C04E134D12d3C82E56f374790262EED6B5D259';
+var contractAddress = '0xb5729724AB67773839F118Aa8533A4Ed9fDD8CCA';
 var BlockchainSplitwise = new web3.eth.Contract(abi, contractAddress);
 
 // =============================================================================
@@ -163,62 +145,14 @@ async function getCreditors(user) {
   return creditorToAmount;
 }
 
-// given an existing path, and the new IOU (creditor, amount), we have a loop to resolve
-async function resolveLoop(path, { creditor, amount }) {
-  let minWeight = Number.MAX_SAFE_INTEGER;
-  // ‘resolve’ any cycles in this graph by subtracting the
-  // minimum of all the weights in the cycle from every step in the cycle (thereby making at least one
-  // step in the cycle have weight ‘0’)
-  const graph = [];
-  for(let i = 1; i < path.length; i++) {
-    const from = path[i-1];
-    const to = path[i];
-    const response = await BlockchainSplitwise.methods.lookup(from, to).call({
-      from: web3.eth.defaultAccount
-    });
-    const amtOwed = Number(response);
-    graph.push({ from, to, amt: amtOwed });
-    minWeight = Math.min(minWeight, amtOwed);
-  }
-  // account for the new IOU amount
-  minWeight = Math.min(minWeight, amount);
-
-  graph.forEach((node) => {
-    node.amt -= minWeight;
-  });
-
-  return {
-    newAmountOwed: amount - minWeight,
-    graph,
-  };
-}
-
 // TODO: add an IOU ('I owe you') to the system
 // The person you owe money is passed as 'creditor'
 // The amount you owe them is passed as 'amount'
 async function add_IOU(creditor, amount) {
-  const path = await doBFS(creditor, web3.eth.defaultAccount, getNeighbors);
-  // we have a path from creditor to user, now if we add user to creditor, this is a potential cycle
-  if (path) {
-    const { newAmountOwed, graph } = await resolveLoop(path, { creditor, amount });
-    amount = newAmountOwed;
-
-    if (graph) {
-      graph.forEach(({ from, to, amt }) => {
-        BlockchainSplitwise.methods.updateIOU(from, to, amt).send({
-          from: web3.eth.defaultAccount
-        });
-      });
-    }
-  }
-
-  if (amount) {
-    return BlockchainSplitwise.methods.addIOU(creditor, amount).send({
-      from: web3.eth.defaultAccount
-    });
-  } else {
-    return Promise.resolve();
-  }
+  const path = await doBFS(creditor, web3.eth.defaultAccount, getNeighbors) || [];
+  return BlockchainSplitwise.methods.addIOU(creditor, amount, path).send({
+    from: web3.eth.defaultAccount
+  });
 }
 
 // =============================================================================
@@ -443,7 +377,7 @@ async function sanityCheck() {
   console.log("Final Score: " + score +"/45");
 }
 
-// sanityCheck() //Uncomment this line to run the sanity check when you first open index.html
+sanityCheck() //Uncomment this line to run the sanity check when you first open index.html
 
 async function testLoop() {
   let passed = 0;
