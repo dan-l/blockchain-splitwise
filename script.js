@@ -50,6 +50,29 @@ var abi = [
       ],
       "stateMutability": "view",
       "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "debtor",
+          "type": "address"
+        },
+        {
+          "internalType": "address",
+          "name": "creditor",
+          "type": "address"
+        },
+        {
+          "internalType": "uint32",
+          "name": "amount",
+          "type": "uint32"
+        }
+      ],
+      "name": "updateIOU",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
     }
   ];
 
@@ -57,7 +80,7 @@ var abi = [
 abiDecoder.addABI(abi);
 // call abiDecoder.decodeMethod to use this - see 'getAllFunctionCalls' for more
 
-var contractAddress = '0x627733e0358d5CE1c778B8Ae8F22651CE953Eba0';
+var contractAddress = '0x52c92366451A75156b01A7d4d481f1634ae4241D';
 var BlockchainSplitwise = new web3.eth.Contract(abi, contractAddress);
 
 // =============================================================================
@@ -71,7 +94,7 @@ var BlockchainSplitwise = new web3.eth.Contract(abi, contractAddress);
 //   - a list of everyone who has ever sent or received an IOU
 // OR
 //   - a list of everyone currently owing or being owed money
-async function getUsers() {  
+async function getUsers() {
   // You can assume that the transaction volume is small enough that it’s feasible to search the
   // whole blockchain on the client,
   const calls = await getAllFunctionCalls(contractAddress, 'addIOU');
@@ -89,17 +112,12 @@ async function getUsers() {
 // TODO: Get the total amount owed by the user specified by 'user'
 async function getTotalOwed(user) {
   const creditors = await getUsers();
-  let amtOwed = 0;
-  for (const creditor of creditors) {
-    if (user !== creditor) {
-      const response = await BlockchainSplitwise.methods.lookup(user, creditor).call({
-        from: user
-      });
-      amtOwed += Number(response);
-    }
-  }
-
-  return amtOwed;
+  
+  const creditorsData = await getCreditors(user);
+  return creditorsData.reduce((totalOwed, { amt }) => {
+    totalOwed += amt;
+    return totalOwed;
+  }, 0);
 }
 
 // TODO: Get the last time this user has sent or received an IOU, in seconds since Jan. 1, 1970
@@ -117,13 +135,88 @@ async function getLastActive(user) {
   return userCall ? userCall.t : null;
 }
 
+// get addresses of all the creditors of the user
+async function getNeighbors(user) {
+  const creditorToAmount = await getCreditors(user);
+  return creditorToAmount.map(({ creditor }) => creditor);
+}
+
+// figure out all the creditors of user and the amount owed to each of them by doing a lookup
+async function getCreditors(user) {
+  const creditors = await getUsers();
+  // list of object { creditor: 0x123, amount: 1}
+  const creditorToAmount = [];
+  for (const creditor of creditors) {
+    if (user !== creditor) {
+      const response = await BlockchainSplitwise.methods.lookup(user, creditor).call({
+        from: web3.eth.defaultAccount
+      });
+      const amt = Number(response);
+
+      amt && creditorToAmount.push({
+        creditor,
+        amt
+      }) 
+    }
+  }
+
+  return creditorToAmount;
+}
+
+// given an existing path, and the new IOU (creditor, amount), we have a loop to resolve
+async function resolveLoop(path, { creditor, amount }) {
+  let minWeight = Number.MAX_SAFE_INTEGER;
+  // ‘resolve’ any cycles in this graph by subtracting the
+  // minimum of all the weights in the cycle from every step in the cycle (thereby making at least one
+  // step in the cycle have weight ‘0’)
+  const graph = [];
+  for(let i = 1; i < path.length; i++) {
+    const from = path[i-1];
+    const to = path[i];
+    const response = await BlockchainSplitwise.methods.lookup(from, to).call({
+      from: web3.eth.defaultAccount
+    });
+    const amtOwed = Number(response);
+    graph.push({ from, to, amt: amtOwed });
+    minWeight = Math.min(minWeight, amtOwed);
+  }
+  // account for the new IOU amount
+  minWeight = Math.min(minWeight, amount);
+
+  graph.forEach((node) => {
+    node.amt -= minWeight;
+  });
+
+  return {
+    newAmountOwed: amount - minWeight,
+    graph,
+  };
+}
+
 // TODO: add an IOU ('I owe you') to the system
 // The person you owe money is passed as 'creditor'
 // The amount you owe them is passed as 'amount'
 async function add_IOU(creditor, amount) {
-  return BlockchainSplitwise.methods.addIOU(creditor, amount).send({
-    from: web3.eth.defaultAccount
-  });
+  const path = await doBFS(creditor, web3.eth.defaultAccount, getNeighbors);
+  // we have a path from creditor to user, now if we add user to creditor, this is a potential cycle
+  if (path) {
+    const { newAmountOwed, graph } = await resolveLoop(path, { creditor, amount });
+    amount = newAmountOwed;
+
+    if (graph) {
+      graph.forEach(({ from, to, amt }) => {
+        BlockchainSplitwise.methods.updateIOU(from, to, amt).send({
+          from: web3.eth.defaultAccount
+        });
+      });
+    }
+  }
+
+  if (amount) {
+    BlockchainSplitwise.methods.addIOU(creditor, amount).send({
+      from: web3.eth.defaultAccount
+    });
+  }
 }
 
 // =============================================================================
@@ -173,7 +266,7 @@ async function doBFS(start, end, getNeighbors) {
 	while (queue.length > 0) {
 		var cur = queue.shift();
 		var lastNode = cur[cur.length-1]
-		if (lastNode === end) {
+		if (lastNode.toLowerCase() === end.toLowerCase()) {
 			return cur;
 		} else {
 			var neighbors = await getNeighbors(lastNode);
@@ -236,7 +329,6 @@ getUsers().then((response)=>{
 $("#addiou").click(function() {
 	web3.eth.defaultAccount = $("#myaccount").val(); //sets the default account
   add_IOU($("#creditor").val(), $("#amount").val()).then((response)=>{
-    console.log('adding IOU', response);
 		window.location.reload(true); // refreshes the page after add_IOU returns and the promise is unwrapped
 	})
 });
@@ -305,4 +397,72 @@ async function sanityCheck() {
 	console.log("Final Score: " + score +"/21");
 }
 
-sanityCheck() //Uncomment this line to run the sanity check when you first open index.html
+// sanityCheck() //Uncomment this line to run the sanity check when you first open index.html
+
+async function testLoop() {
+  let passed = 0;
+  let owed = 0;
+
+  const accounts = await web3.eth.getAccounts();
+
+  // 0 -> (lookup_0_1+10) 1
+  web3.eth.defaultAccount = accounts[0];
+  // get existing balance
+  const lookup_0_1 = await BlockchainSplitwise.methods.lookup(accounts[0], accounts[1]).call({from:web3.eth.defaultAccount});
+  // add IOU
+  await add_IOU(accounts[1], 10);
+  // get balance owed
+  owed = await getTotalOwed(accounts[0]);
+  const updated_lookup_0_1 = Number(lookup_0_1) + 10;
+  passed += check(`getTotalOwed(0) now ${updated_lookup_0_1}`, owed === updated_lookup_0_1) ? 1 : 0;
+
+  // 1 -> (lookup_1_2 + 20) 2
+  web3.eth.defaultAccount = accounts[1];
+  const lookup_1_2 = await BlockchainSplitwise.methods.lookup(accounts[1], accounts[2]).call({from:web3.eth.defaultAccount});
+  await add_IOU(accounts[2], 20);
+  owed = await getTotalOwed(accounts[1]);
+  const updated_lookup_1_2 = Number(lookup_1_2) + 20;
+  passed += check(`getTotalOwed(1) now ${updated_lookup_1_2}`, owed === updated_lookup_1_2) ? 1 : 0;
+
+  // 2 -> (lookup_2_3 + 30) 3
+  web3.eth.defaultAccount = accounts[2];
+  const lookup_2_3 = await BlockchainSplitwise.methods.lookup(accounts[2], accounts[3]).call({from:web3.eth.defaultAccount});
+  await add_IOU(accounts[3], 30);
+  owed = await getTotalOwed(accounts[2]);
+  const updated_lookup_2_3 = Number(lookup_2_3) + 30;
+  passed += check(`getTotalOwed(2) now ${updated_lookup_2_3}`, owed === updated_lookup_2_3) ? 1 : 0;
+
+  // 3 -> (lookup_3_0 + 40) 0, THERE IS A LOOP
+  web3.eth.defaultAccount = accounts[3];
+  const lookup_3_0 = await BlockchainSplitwise.methods.lookup(accounts[3], accounts[0]).call({from:web3.eth.defaultAccount});
+  console.log('LOOP');
+  console.log(`getTotalOwed(3) before LOOP: ${lookup_3_0}`);
+
+  // Prepare for the loop
+  const potential_lookup_3_0 = Number(lookup_3_0) + 40;
+  let min = Math.min(updated_lookup_0_1, updated_lookup_1_2, updated_lookup_2_3, potential_lookup_3_0);
+
+  await add_IOU(accounts[0], lookup_3_0 + 40);
+  console.log('CHECKING RESOLVED LOOP');
+
+  // check that all other balance is updated
+  owed = await getTotalOwed(accounts[0]);
+  const resolved_lookup_0_1 = updated_lookup_0_1 - min;
+  passed += check(`getTotalOwed(0) now ${resolved_lookup_0_1}`, owed === resolved_lookup_0_1) ? 1 : 0;
+
+  owed = await getTotalOwed(accounts[1]);
+  const resolved_lookup_1_2 = updated_lookup_1_2 - min;
+  passed += check(`getTotalOwed(1) now ${resolved_lookup_1_2}`, owed === resolved_lookup_1_2) ? 1 : 0;
+
+  owed = await getTotalOwed(accounts[2]);
+  const resolved_lookup_2_3 = updated_lookup_2_3 - min;
+  passed += check(`getTotalOwed(2) now ${resolved_lookup_2_3}`, owed === resolved_lookup_2_3) ? 1 : 0;
+
+  owed = await getTotalOwed(accounts[3]);
+  const resolved_lookup_3_0 = potential_lookup_3_0 - min;
+  passed += check(`getTotalOwed(3) now ${resolved_lookup_3_0}`, owed === resolved_lookup_3_0) ? 1 : 0;
+
+  console.log(`Passed: ${passed}/${7}`);
+}
+
+testLoop();

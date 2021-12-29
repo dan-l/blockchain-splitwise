@@ -23,4 +23,10 @@ contract BlockchainSplitwise {
 
     ledger[msg.sender][creditor] += amount;
   }
+
+  function updateIOU(address debtor, address creditor, uint32 amount) external {
+    require(amount >= 0);
+
+    ledger[debtor][creditor] = amount;
+  }
 }
